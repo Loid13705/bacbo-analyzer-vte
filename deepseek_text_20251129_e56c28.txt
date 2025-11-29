@@ -1,0 +1,22 @@
+VT-BacBo/
+├── 📄 README.md
+├── 🐍 src/
+│   ├── main.py
+│   ├── ocr_engine.py
+│   ├── analyzer.py
+│   ├── gui.py
+│   └── config.py
+├── 🖥️ installer/
+│   ├── setup.iss
+│   └── assets/
+├── 🎨 assets/
+│   ├── logo.ico
+│   ├── logo.png
+│   └── banner.png
+├── 📊 docs/
+│   ├── CHANGELOG.md
+│   └── MANUAL.md
+├── 🔧 .github/
+│   └── workflows/
+│       └── build.yml
+└── 📄 requirements.txt

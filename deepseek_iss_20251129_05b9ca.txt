@@ -1,0 +1,108 @@
+; Script de Instalação Inno Setup - VT BacBo
+; Gerador de instalador profissional
+
+#define MyAppName "VT BacBo"
+#define MyAppVersion "1.0.0"
+#define MyAppPublisher "VT Team"
+#define MyAppURL "https://github.com/seu-usuario/VT-BacBo"
+#define MyAppExeName "VT-BacBo.exe"
+
+[Setup]
+; Informações básicas
+AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
+
+; Configurações de instalação
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+AllowNoIcons=yes
+LicenseFile=LICENSE
+InfoBeforeFile=README.txt
+OutputDir=Output
+OutputBaseFilename=VT-BacBo-Setup
+SetupIconFile=assets\logo.ico
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+PrivilegesRequired=admin
+
+; Idioma
+ShowLanguageDialog=auto
+
+; Assinatura (opcional)
+;SignTool=MySignTool
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1
+
+[Files]
+; Arquivos principais
+Source: "dist\VT-BacBo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Tesseract OCR (se incluído)
+; Source: "tesseract\*"; DestDir: "{app}\tesseract"; Flags: ignoreversion recursesubdirs
+
+; Documentação
+Source: "README.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "CHANGELOG.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "MANUAL.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+
+; Assets
+Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion
+
+[Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon
+
+[Run]
+; Executar após instalação
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Comandos de desinstalação (se necessário)
+; Filename: "{app}\uninstaller.exe"; Parameters: "/silent"
+
+[Code]
+// Código personalizado para verificações
+function InitializeSetup(): Boolean;
+begin
+  // Verificar se Python está instalado (se necessário)
+  // Result := CheckPythonInstallation;
+  
+  // Verificar requisitos do sistema
+  Result := CheckSystemRequirements;
+end;
+
+function CheckSystemRequirements(): Boolean;
+begin
+  // Verificar versão do Windows
+  if GetWindowsVersion < $06010000 then // Windows 7 ou superior
+  begin
+    MsgBox('Este aplicativo requer Windows 7 ou superior.', mbError, MB_OK);
+    Result := False;
+  end
+  else
+    Result := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // Configurações pós-instalação
+    Log('Instalação concluída com sucesso');
+  end;
+end;
