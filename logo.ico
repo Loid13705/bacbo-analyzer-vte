@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed --icon=logo.ico --name="VT BACBO ANALYZER" seu_script.py
