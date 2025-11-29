@@ -1,0 +1,318 @@
+# bacbo_gui.py
+"""
+BacBo Analyzer - GUI for manual screenshot OCR + Telegram alerts
+Features:
+- Load screenshot (print) from Betano/Evolution
+- Select crop region for OCR (click-drag)
+- Let user confirm result with buttons (Jogador/Banca/Empate)
+- Save history to local SQLite DB and CSV export
+- Real-time simple analysis: runs, transition matrix
+- Send alerts to Telegram (configure token/chat_id in config.ini)
+
+Requirements (runtime):
+- Python 3.8+
+- tesseract-ocr (system dependency)
+- pip packages: pillow, pytesseract, opencv-python, pandas, requests
+
+Build: use PyInstaller + Inno Setup (instructions below the code)
+"""
+
+import os
+import sys
+import sqlite3
+import configparser
+import threading
+from datetime import datetime
+from tkinter import Tk, Frame, Button, Label, filedialog, Canvas, NW, Toplevel, messagebox
+from PIL import Image, ImageTk, ImageOps
+import pytesseract
+import pandas as pd
+import requests
+import io
+
+# --- Config
+CONFIG_FILE = 'config.ini'
+DB_FILE = 'bacbo_history.db'
+EXPORT_CSV = 'bacbo_history.csv'
+
+# default config template
+DEFAULT_CONFIG = {
+    'telegram': {
+        'token': 'SEU_TOKEN_AQUI',
+        'chat_id': 'SEU_CHAT_ID_AQUI'
+    },
+    'ocr': {
+        'tesseract_cmd': ''  # set if tesseract not on PATH e.g. C:\Program Files\Tesseract-OCR\tesseract.exe
+    }
+}
+
+# --- Helper: config
+config = configparser.ConfigParser()
+if not os.path.exists(CONFIG_FILE):
+    config.read_dict(DEFAULT_CONFIG)
+    with open(CONFIG_FILE, 'w') as f:
+        config.write(f)
+else:
+    config.read(CONFIG_FILE)
+
+# set tesseract cmd if provided
+tesseract_cfg = config.get('ocr', 'tesseract_cmd', fallback='').strip()
+if tesseract_cfg:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cfg
+
+# --- DB Initialization
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS rounds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT,
+            result TEXT,
+            image BLOB,
+            note TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- Telegram helper
+def send_telegram(text):
+    token = config.get('telegram', 'token', fallback='').strip()
+    chat_id = config.get('telegram', 'chat_id', fallback='').strip()
+    if not token or not chat_id or 'SEU_TOKEN' in token:
+        return False
+    url = f'https://api.telegram.org/bot{token}/sendMessage'
+    payload = {'chat_id': chat_id, 'text': text}
+    try:
+        requests.post(url, data=payload, timeout=6)
+        return True
+    except Exception:
+        return False
+
+# --- Analysis helpers
+def load_history_df():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query('SELECT id, ts, result FROM rounds ORDER BY id ASC', conn)
+    conn.close()
+    return df
+
+def compute_runs(df):
+    if df.empty:
+        return {}
+    seq = df['result'].tolist()
+    runs = []
+    cur = seq[0]
+    length = 1
+    for s in seq[1:]:
+        if s == cur:
+            length += 1
+        else:
+            runs.append((cur, length))
+            cur = s
+            length = 1
+    runs.append((cur, length))
+    # aggregate
+    agg = {}
+    for r,l in runs:
+        agg.setdefault(r, []).append(l)
+    stats = {k: {'count_runs': len(v), 'max_run': max(v), 'avg_run': sum(v)/len(v)} for k,v in agg.items()}
+    return stats
+
+# --- GUI
+class Cropper(Toplevel):
+    def __init__(self, master, pil_image, callback):
+        super().__init__(master)
+        self.title('Selecione a area dos resultados (arraste)')
+        self.img = pil_image
+        self.callback = callback
+        self.canvas = Canvas(self, cursor='cross')
+        self.canvas.pack(fill='both', expand=True)
+        self.tkimg = ImageTk.PhotoImage(self.img)
+        self.canvas_img = self.canvas.create_image(0,0,anchor=NW,image=self.tkimg)
+        self.rect = None
+        self.start_x = self.start_y = None
+        self.crop_box = None
+        self.canvas.config(scrollregion=self.canvas.bbox('all'))
+        self.canvas.bind('<ButtonPress-1>', self.on_button_press)
+        self.canvas.bind('<B1-Motion>', self.on_move_press)
+        self.canvas.bind('<ButtonRelease-1>', self.on_button_release)
+        btn_frame = Frame(self)
+        btn_frame.pack(fill='x')
+        Button(btn_frame, text='Confirmar Corte', command=self.confirm).pack(side='left', padx=5, pady=5)
+        Button(btn_frame, text='Cancelar', command=self.destroy).pack(side='right', padx=5, pady=5)
+
+    def on_button_press(self, event):
+        self.start_x = self.canvas.canvasx(event.x)
+        self.start_y = self.canvas.canvasy(event.y)
+        if not self.rect:
+            self.rect = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='red')
+
+    def on_move_press(self, event):
+        curX = self.canvas.canvasx(event.x)
+        curY = self.canvas.canvasy(event.y)
+        self.canvas.coords(self.rect, self.start_x, self.start_y, curX, curY)
+
+    def on_button_release(self, event):
+        x1 = int(min(self.start_x, self.canvas.canvasx(event.x)))
+        y1 = int(min(self.start_y, self.canvas.canvasy(event.y)))
+        x2 = int(max(self.start_x, self.canvas.canvasx(event.x)))
+        y2 = int(max(self.start_y, self.canvas.canvasy(event.y)))
+        self.crop_box = (x1, y1, x2, y2)
+
+    def confirm(self):
+        if not self.crop_box:
+            messagebox.showwarning('Atenção', 'Selecione uma área primeiro.')
+            return
+        cropped = self.img.crop(self.crop_box)
+        self.callback(cropped)
+        self.destroy()
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title('BacBo Analyzer - OCR por Print (Betano/Evolution)')
+        self.image = None
+        self.cropped = None
+        self.photo = None
+
+        top = Frame(root)
+        top.pack(fill='x')
+        Button(top, text='Carregar Print...', command=self.load_image).pack(side='left', padx=5, pady=5)
+        Button(top, text='Exportar CSV', command=self.export_csv).pack(side='left', padx=5)
+        Button(top, text='Ver Relatório', command=self.show_report).pack(side='left', padx=5)
+
+        mid = Frame(root)
+        mid.pack(fill='both', expand=True)
+        self.canvas = Canvas(mid, width=860, height=480, bg='black')
+        self.canvas.pack(fill='both', expand=True)
+
+        bottom = Frame(root)
+        bottom.pack(fill='x')
+        Label(bottom, text='Confirmar Resultado:').pack(side='left', padx=8)
+        Button(bottom, text='Jogador', command=lambda: self.save_result('P')).pack(side='left', padx=4)
+        Button(bottom, text='Banca', command=lambda: self.save_result('B')).pack(side='left', padx=4)
+        Button(bottom, text='Empate', command=lambda: self.save_result('T')).pack(side='left', padx=4)
+        Button(bottom, text='Detectar OCR', command=self.try_ocr).pack(side='right', padx=8)
+
+        status = Frame(root)
+        status.pack(fill='x')
+        self.status_label = Label(status, text='Pronto')
+        self.status_label.pack(side='left')
+
+        init_db()
+
+    def load_image(self):
+        path = filedialog.askopenfilename(filetypes=[('Imagens','*.png;*.jpg;*.jpeg;*.bmp')])
+        if not path:
+            return
+        self.image = Image.open(path).convert('RGB')
+        # resize to fit canvas preserving ratio (max 1200 width)
+        w,h = self.image.size
+        maxw = 1200
+        if w > maxw:
+            ratio = maxw / w
+            self.image = self.image.resize((int(w*ratio), int(h*ratio)), Image.LANCZOS)
+        self.photo = ImageTk.PhotoImage(self.image)
+        self.canvas.delete('all')
+        self.canvas.create_image(0,0,anchor=NW,image=self.photo)
+        self.status_label.config(text=f'Imagem carregada: {os.path.basename(path)}')
+        # open cropper
+        Cropper(self.root, self.image, self.on_cropped)
+
+    def on_cropped(self, pil_crop):
+        self.cropped = pil_crop
+        display = pil_crop.resize((400,200), Image.LANCZOS)
+        self.crop_tk = ImageTk.PhotoImage(display)
+        self.canvas.delete('crop_preview')
+        self.canvas.create_image(10,10,anchor=NW,image=self.crop_tk, tags='crop_preview')
+        self.status_label.config(text='Área de resultados selecionada. Use Detectar OCR ou confirme manual.')
+
+    def try_ocr(self):
+        if self.cropped is None:
+            messagebox.showwarning('Atenção', 'Selecione a área primeiro (Carregar Print -> selecionar).')
+            return
+        # preprocess for OCR: convert to grayscale and increase contrast
+        gray = ImageOps.grayscale(self.cropped)
+        bw = gray.point(lambda x: 0 if x<150 else 255, '1')
+        try:
+            txt = pytesseract.image_to_string(bw, lang='por')
+        except Exception as e:
+            txt = pytesseract.image_to_string(bw)
+        txt = txt.strip()
+        messagebox.showinfo('OCR result', f'Reconhecido:\n{txt}')
+        self.status_label.config(text=f'OCR: {txt}')
+
+    def save_result(self, result):
+        if self.cropped is None:
+            if not messagebox.askyesno('Confirmar sem imagem', 'Nenhuma area selecionada. Deseja gravar mesmo assim?'):
+                return
+        buf = None
+        if self.cropped:
+            bio = io.BytesIO()
+            self.cropped.save(bio, format='PNG')
+            buf = bio.getvalue()
+        ts = datetime.utcnow().isoformat()
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute('INSERT INTO rounds (ts, result, image, note) VALUES (?,?,?,?)', (ts, result, buf, None))
+        conn.commit()
+        conn.close()
+        self.status_label.config(text=f'Result saved: {result} at {ts}')
+        # run analysis and maybe notify
+        threading.Thread(target=self.post_save_actions, args=(result,)).start()
+
+    def post_save_actions(self, result):
+        df = load_history_df()
+        # compute run: check last run length
+        last_seq = df['result'].tolist()
+        run_len = 1
+        for i in range(len(last_seq)-2, -1, -1):
+            if last_seq[i] == last_seq[-1]:
+                run_len += 1
+            else:
+                break
+        # simple rule: notify if run >=4
+        if run_len >= 4:
+            send_telegram(f'🔥 RUN DETECTADO: {last_seq[-1]} x{run_len}')
+        # always send small report
+        stats = compute_runs(df)
+        msg = f"📊 BacBo - total rounds: {len(df)}\nÚltimo: {last_seq[-1]}\n"
+        for k,v in stats.items():
+            msg += f"{k}: max_run {v['max_run']}, avg {v['avg_run']:.2f} ({v['count_runs']} runs)\n"
+        send_telegram(msg)
+
+    def export_csv(self):
+        df = load_history_df()
+        if df.empty:
+            messagebox.showinfo('Exportar', 'Sem dados para exportar')
+            return
+        df.to_csv(EXPORT_CSV, index=False)
+        messagebox.showinfo('Exportar', f'Exportado: {EXPORT_CSV}')
+
+    def show_report(self):
+        df = load_history_df()
+        stats = compute_runs(df)
+        s = f'Total rounds: {len(df)}\n'
+        for k,v in stats.items():
+            s += f"{k}: max_run {v['max_run']}, avg {v['avg_run']:.2f} ({v['count_runs']} runs)\n"
+        messagebox.showinfo('Relatório', s)
+
+
+if __name__ == '__main__':
+    root = Tk()
+    app = App(root)
+    root.geometry('980x700')
+    root.mainloop()
+
+
+# ----------------------------------------------------
+# Additional files provided below (include them in the same folder before building):
+# 1) requirements.txt
+# 2) build_instructions.txt
+# 3) inno_setup_script.iss
+# 4) config.ini (template)
+#
+# ----------------------------------------------------
