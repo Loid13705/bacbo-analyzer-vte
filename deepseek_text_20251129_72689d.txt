@@ -1,6 +1,0 @@
-VT-BacBo/
-├── src/           # Código fonte principal
-├── installer/     # Scripts de instalação
-├── assets/        # Recursos visuais
-├── docs/          # Documentação
-└── .github/       # CI/CD workflows
