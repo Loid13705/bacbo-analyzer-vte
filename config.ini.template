@@ -1,0 +1,9 @@
+[telegram]
+# NÃO insira tokens em repositórios públicos.
+token = SEU_TOKEN_AQUI
+chat_id = SEU_CHAT_ID_AQUI
+
+[ocr]
+# Se Tesseract não estiver no PATH, aponte o caminho completo:
+# tesseract_cmd = C:\Program Files\Tesseract-OCR\tesseract.exe
+tesseract_cmd =
